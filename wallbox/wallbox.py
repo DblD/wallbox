@@ -37,6 +37,7 @@ class Wallbox:
     def authenticate(self):
         auth_path = "users/signin"
         auth = HTTPBasicAuth(self.username, self.password)
+        used_refresh_token = False
         # if already has token:
         if self.jwtToken != "":
             # check if token is still valid
@@ -49,6 +50,7 @@ class Wallbox:
                 # try to refresh token
                 auth_path = "users/refresh-token"
                 auth = BearerAuth(self.jwtRefreshToken)
+                used_refresh_token = True
 
         try:
             response = requests.get(
@@ -59,7 +61,25 @@ class Wallbox:
             )
             response.raise_for_status()
         except requests.exceptions.HTTPError as err:
-            raise (err)
+            # If a refresh-token attempt was rejected (server-side invalidation
+            # despite our locally-tracked TTL still being valid), fall back to
+            # a fresh sign-in with the stored credentials before giving up.
+            if (used_refresh_token
+                    and err.response is not None
+                    and err.response.status_code in (401, 403)):
+                self.jwtToken = ""
+                self.jwtRefreshToken = ""
+                self.jwtTokenTtl = 0
+                self.jwtRefreshTokenTtl = 0
+                response = requests.get(
+                    f"{self.authUrl}users/signin",
+                    auth=HTTPBasicAuth(self.username, self.password),
+                    headers={'Partner': 'wallbox'},
+                    timeout=self._requestGetTimeout
+                )
+                response.raise_for_status()
+            else:
+                raise (err)
 
         self.jwtToken = json.loads(response.text)["data"]["attributes"]["token"]
         self.jwtRefreshToken = json.loads(response.text)["data"]["attributes"]["refresh_token"]
